@@ -27,8 +27,8 @@ pub struct BillboardTexture(pub Handle<Image>);
 ///
 /// # Warning
 ///
-/// This component is incompatible with [`Text`] and [`Text2d`]!
-/// Bevy will attempt to render the `Text` in the UI and `Text2D` as 2D
+/// This component is incompatible with Bevy's `Text` and `Text2d`!
+/// Bevy will attempt to render the `Text` in the UI and `Text2d` as 2D
 /// text, corrupting the internal `TextLayoutInfo` used by billboarding.
 ///
 /// If you are not using `TextSpan` children, set the `String` field of
