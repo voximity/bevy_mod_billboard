@@ -6,18 +6,79 @@ mod utils;
 
 use crate::text::{BillboardTextBounds, BillboardTextHandles};
 use bevy::prelude::*;
+use bevy::render::extract_component::ExtractComponent;
 use bevy::sprite::Anchor;
+use bevy::text::{TextRoot, TextSpanAccess};
 
 pub(self) const BILLBOARD_SHADER_HANDLE: Handle<Shader> =
     Handle::weak_from_u128(12823766040132746076);
 
-#[derive(Clone, Component, Reflect, Default)]
+/// Marker component for a billboarded texture.
+///
+/// Additionally insert a [`BillboardMesh`] to function.
+#[derive(Clone, Component, Default, Reflect)]
 #[reflect(Component)]
-pub struct BillboardMeshHandle(pub Handle<Mesh>);
+#[require(Billboard, BillboardMesh, Transform, Visibility)]
+pub struct BillboardTexture(pub Handle<Image>);
+
+/// Marker component for billboarded text.
+///
+/// Optionally insert [`TextSpan`] children to render separate sections.
+///
+/// # Warning
+///
+/// This component is incompatible with [`Text`] and [`Text2d`]!
+/// Bevy will attempt to render the `Text` in the UI and `Text2D` as 2D
+/// text, corrupting the internal `TextLayoutInfo` used by billboarding.
+///
+/// If you are not using `TextSpan` children, set the `String` field of
+/// this struct.
+#[derive(Clone, Component, Default)]
+#[require(
+    Billboard,
+    BillboardTextBounds,
+    BillboardTextHandles,
+    TextLayout,
+    TextFont,
+    TextColor,
+    Anchor,
+    Transform,
+    Visibility
+)]
+pub struct BillboardText(pub String);
+
+impl BillboardText {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+}
+
+impl TextRoot for BillboardText {}
+
+impl TextSpanAccess for BillboardText {
+    fn read_span(&self) -> &str {
+        self.0.as_str()
+    }
+    fn write_span(&mut self) -> &mut String {
+        &mut self.0
+    }
+}
+
+impl From<&str> for BillboardText {
+    fn from(value: &str) -> Self {
+        Self(String::from(value))
+    }
+}
+
+impl From<String> for BillboardText {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
 
 #[derive(Clone, Component, Reflect, Default)]
 #[reflect(Component)]
-pub struct BillboardTextureHandle(pub Handle<Image>);
+pub struct BillboardMesh(pub Handle<Mesh>);
 
 #[derive(Clone, Copy, Component, Debug, Reflect)]
 pub struct BillboardDepth(pub bool);
@@ -28,7 +89,8 @@ impl Default for BillboardDepth {
     }
 }
 
-#[derive(Default, Clone, Copy, Component, Debug, Reflect)]
+#[derive(Default, Clone, Copy, Component, ExtractComponent, Debug, Reflect)]
+#[require(BillboardDepth)]
 pub struct Billboard;
 
 #[derive(Default, Clone, Copy, Component, Debug, Reflect)]
@@ -37,43 +99,39 @@ pub struct BillboardLockAxis {
     pub rotation: bool,
 }
 
-#[derive(Bundle, Default)]
-pub struct BillboardLockAxisBundle<T: Bundle> {
-    pub billboard_bundle: T,
-    pub lock_axis: BillboardLockAxis,
-}
+impl BillboardLockAxis {
+    pub fn new() -> Self {
+        Default::default()
+    }
 
-#[derive(Bundle, Default)]
-pub struct BillboardTextureBundle {
-    pub billboard: Billboard,
-    pub mesh: BillboardMeshHandle,
-    pub texture: BillboardTextureHandle,
-    pub transform: Transform,
-    pub global_transform: GlobalTransform,
-    pub visibility: Visibility,
-    pub inherited_visibility: InheritedVisibility,
-    pub view_visibility: ViewVisibility,
-    pub billboard_depth: BillboardDepth,
-}
+    pub fn from_lock_y(y_axis: bool) -> Self {
+        Self {
+            y_axis,
+            ..default()
+        }
+    }
 
-#[derive(Bundle, Default)]
-pub struct BillboardTextBundle {
-    pub billboard: Billboard,
-    pub text: Text,
-    pub text_bounds: BillboardTextBounds,
-    pub text_anchor: Anchor,
-    pub transform: Transform,
-    pub global_transform: GlobalTransform,
-    pub visibility: Visibility,
-    pub inherited_visibility: InheritedVisibility,
-    pub view_visibility: ViewVisibility,
-    pub billboard_depth: BillboardDepth,
-    pub billboard_text_handles: BillboardTextHandles,
+    pub fn from_lock_rotation(rotation: bool) -> Self {
+        Self {
+            rotation,
+            ..default()
+        }
+    }
+
+    pub fn with_lock_y(mut self, y_axis: bool) -> Self {
+        self.y_axis = y_axis;
+        self
+    }
+
+    pub fn with_lock_rotation(mut self, rotation: bool) -> Self {
+        self.rotation = rotation;
+        self
+    }
 }
 
 pub mod prelude {
     pub use crate::{
-        plugin::BillboardPlugin, text::BillboardTextBounds, BillboardMeshHandle,
-        BillboardTextBundle, BillboardTextureBundle, BillboardTextureHandle,
+        plugin::BillboardPlugin, text::BillboardTextBounds, BillboardDepth, BillboardLockAxis,
+        BillboardMesh, BillboardText, BillboardTexture,
     };
 }

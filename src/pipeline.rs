@@ -5,6 +5,7 @@ use bevy::core_pipeline::core_3d::Transparent3d;
 use bevy::ecs::query::ROQueryItem;
 use bevy::ecs::system::lifetimeless::{Read, SRes};
 use bevy::ecs::system::{SystemParamItem, SystemState};
+use bevy::image::BevyDefault;
 use bevy::log::error;
 use bevy::math::Mat4;
 use bevy::prelude::{
@@ -12,7 +13,10 @@ use bevy::prelude::{
     ResMut, Resource, With, World,
 };
 use bevy::render::extract_component::{ComponentUniforms, DynamicUniformIndex};
-use bevy::render::mesh::{GpuBufferInfo, GpuMesh, MeshVertexBufferLayoutRef, PrimitiveTopology};
+use bevy::render::mesh::allocator::MeshAllocator;
+use bevy::render::mesh::{
+    MeshVertexBufferLayoutRef, PrimitiveTopology, RenderMesh, RenderMeshBufferInfo,
+};
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_phase::{
     DrawFunctions, PhaseItemExtraIndex, RenderCommand, RenderCommandResult, SetItemPipeline,
@@ -27,9 +31,9 @@ use bevy::render::render_resource::{
     SpecializedMeshPipelines, TextureFormat, TextureSampleType, TextureViewDimension, VertexState,
 };
 use bevy::render::renderer::RenderDevice;
-use bevy::render::texture::{BevyDefault, GpuImage};
+use bevy::render::texture::GpuImage;
 use bevy::render::view::{
-    ExtractedView, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms, VisibleEntities,
+    ExtractedView, RenderVisibleEntities, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms,
 };
 use bevy::sprite::SpriteAssetEvents;
 use bevy::utils;
@@ -144,16 +148,15 @@ pub fn prepare_billboard_bind_group(
 }
 
 pub fn queue_billboard_texture(
-    mut views: Query<(Entity, &ExtractedView, &VisibleEntities)>,
+    mut views: Query<(Entity, &ExtractedView, &RenderVisibleEntities, &Msaa)>,
     mut transparent_render_phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
     mut pipeline_cache: ResMut<PipelineCache>,
     mut image_bind_groups: ResMut<BillboardImageBindGroups>,
     mut billboard_pipelines: ResMut<SpecializedMeshPipelines<BillboardPipeline>>,
     render_device: Res<RenderDevice>,
     transparent_draw_functions: Res<DrawFunctions<Transparent3d>>,
-    msaa: Res<Msaa>,
     billboard_pipeline: Res<BillboardPipeline>,
-    (gpu_images, gpu_meshes): (Res<RenderAssets<GpuImage>>, Res<RenderAssets<GpuMesh>>),
+    (gpu_images, gpu_meshes): (Res<RenderAssets<GpuImage>>, Res<RenderAssets<RenderMesh>>),
     events: Res<SpriteAssetEvents>,
     billboards: Query<(
         &BillboardUniform,
@@ -174,7 +177,7 @@ pub fn queue_billboard_texture(
         };
     }
 
-    for (view_entity, view, visible_entities) in &mut views {
+    for (view_entity, view, visible_entities, msaa) in &mut views {
         let Some(transparent_phase) = transparent_render_phases.get_mut(&view_entity) else {
             continue;
         };
@@ -187,7 +190,7 @@ pub fn queue_billboard_texture(
         let rangefinder = view.rangefinder3d();
 
         for visible_entity in visible_entities.iter::<With<Billboard>>() {
-            let Ok((uniform, mesh, image, billboard)) = billboards.get(*visible_entity) else {
+            let Ok((uniform, mesh, image, billboard)) = billboards.get(visible_entity.0) else {
                 continue;
             };
             let Some(gpu_image) = gpu_images.get(image.id) else {
@@ -431,6 +434,7 @@ impl SpecializedMeshPipeline for BillboardPipeline {
                 alpha_to_coverage_enabled: false,
             },
             push_constant_ranges: vec![],
+            zero_initialize_workgroup_memory: false,
         })
     }
 }
@@ -470,7 +474,7 @@ impl<const I: usize> RenderCommand<Transparent3d> for SetBillboardBindGroup<I> {
         let billboard_bind_group = billboard_bind_group.into_inner();
 
         let Some(billboard_index) = billboard_index else {
-            return RenderCommandResult::Failure;
+            return RenderCommandResult::Skip;
         };
 
         pass.set_bind_group(I, &billboard_bind_group.value, &[billboard_index.index()]);
@@ -495,7 +499,7 @@ impl<const I: usize> RenderCommand<Transparent3d> for SetBillboardTextureBindGro
         let images = images.into_inner();
 
         let Some(billboard_texture) = billboard_texture else {
-            return RenderCommandResult::Failure;
+            return RenderCommandResult::Skip;
         };
 
         let bind_group = images.values.get(&billboard_texture.id).unwrap();
@@ -507,7 +511,7 @@ impl<const I: usize> RenderCommand<Transparent3d> for SetBillboardTextureBindGro
 
 pub struct DrawBillboardMesh;
 impl RenderCommand<Transparent3d> for DrawBillboardMesh {
-    type Param = SRes<RenderAssets<GpuMesh>>;
+    type Param = (SRes<RenderAssets<RenderMesh>>, SRes<MeshAllocator>);
     type ViewQuery = ();
     type ItemQuery = Read<RenderBillboardMesh>;
 
@@ -515,34 +519,42 @@ impl RenderCommand<Transparent3d> for DrawBillboardMesh {
         _item: &Transparent3d,
         _view: ROQueryItem<'w, Self::ViewQuery>,
         mesh: Option<ROQueryItem<'w, Self::ItemQuery>>,
-        meshes: SystemParamItem<'w, '_, Self::Param>,
+        (meshes, mesh_allocator): SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
         let Some(mesh) = mesh else {
-            return RenderCommandResult::Failure;
+            return RenderCommandResult::Skip;
         };
 
-        if let Some(gpu_mesh) = meshes.into_inner().get(mesh.id) {
-            pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+        let Some(gpu_mesh) = meshes.into_inner().get(mesh.id) else {
+            return RenderCommandResult::Skip;
+        };
 
-            match &gpu_mesh.buffer_info {
-                GpuBufferInfo::Indexed {
-                    buffer,
-                    index_format,
-                    count,
-                } => {
-                    pass.set_index_buffer(buffer.slice(..), 0, *index_format);
-                    pass.draw_indexed(0..*count, 0, 0..1);
-                }
-                GpuBufferInfo::NonIndexed => {
-                    pass.draw(0..gpu_mesh.vertex_count, 0..1);
-                }
+        let mesh_allocator = mesh_allocator.into_inner();
+        let Some(vertex_slice) = mesh_allocator.mesh_vertex_slice(&mesh.id) else {
+            return RenderCommandResult::Skip;
+        };
+
+        let Some(index_slice) = mesh_allocator.mesh_index_slice(&mesh.id) else {
+            return RenderCommandResult::Skip;
+        };
+
+        pass.set_vertex_buffer(0, vertex_slice.buffer.slice(..));
+
+        match &gpu_mesh.buffer_info {
+            RenderMeshBufferInfo::Indexed {
+                index_format,
+                count,
+            } => {
+                pass.set_index_buffer(index_slice.buffer.slice(..), 0, *index_format);
+                pass.draw_indexed(0..*count, 0, 0..1);
             }
-
-            RenderCommandResult::Success
-        } else {
-            RenderCommandResult::Failure
+            RenderMeshBufferInfo::NonIndexed => {
+                pass.draw(0..gpu_mesh.vertex_count, 0..1);
+            }
         }
+
+        RenderCommandResult::Success
     }
 }
 

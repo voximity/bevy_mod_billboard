@@ -1,15 +1,16 @@
 use crate::pipeline::{RenderBillboardImage, RenderBillboardMesh};
 use crate::utils::calculate_billboard_uniform;
-use crate::{BillboardDepth, BillboardLockAxis};
+use crate::{BillboardDepth, BillboardLockAxis, BillboardText};
 use bevy::color::palettes;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
+use bevy::render::sync_world::RenderEntity;
 use bevy::render::Extract;
 use bevy::sprite::Anchor;
 use bevy::text::{
-    BreakLineOn, FontAtlasSets, PositionedGlyph, Text2dBounds, TextPipeline, TextSettings,
-    YAxisOrientation,
+    ComputedTextBlock, CosmicFontSystem, FontAtlasSets, PositionedGlyph, SwashCache, TextBounds,
+    TextLayoutInfo, TextPipeline, TextReader, YAxisOrientation,
 };
 use bevy::utils::{HashMap, HashSet};
 use smallvec::SmallVec;
@@ -19,13 +20,14 @@ use smallvec::SmallVec;
 
 #[derive(Component, Copy, Clone, Debug, Reflect, Deref, Default)]
 #[reflect(Component)]
-pub struct BillboardTextBounds(pub Text2dBounds);
+pub struct BillboardTextBounds(pub TextBounds);
 
 // TODO: Maybe use something like { Single(Group), Multi(SmallVec<[Group; 1]>) }, benchmark it
-#[derive(Component, Clone, Debug, Deref, DerefMut, Default)]
+#[derive(Component, Clone, Debug, Deref, DerefMut, Default, Reflect)]
+#[reflect(Component)]
 pub struct BillboardTextHandles(pub SmallVec<[BillboardTextHandleGroup; 1]>);
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Reflect)]
 pub struct BillboardTextHandleGroup {
     mesh: Handle<Mesh>,
     image: Handle<Image>,
@@ -36,7 +38,7 @@ pub fn extract_billboard_text(
     mut previous_len: Local<usize>,
     billboard_text_query: Extract<
         Query<(
-            Entity,
+            RenderEntity,
             &ViewVisibility,
             &GlobalTransform,
             &Transform,
@@ -48,7 +50,7 @@ pub fn extract_billboard_text(
 ) {
     let mut batch = Vec::with_capacity(*previous_len);
 
-    for (entity, visibility, global_transform, transform, handles, &depth, lock_axis) in
+    for (render_entity, visibility, global_transform, transform, handles, &depth, lock_axis) in
         &billboard_text_query
     {
         if !visibility.get() {
@@ -58,8 +60,10 @@ pub fn extract_billboard_text(
         let uniform = calculate_billboard_uniform(global_transform, transform, lock_axis);
 
         for handle_group in handles.iter() {
+            // TODO: this will overwrite the render entity if we try to
+            // TODO: add multiple handles in the same extraction!
             batch.push((
-                entity,
+                render_entity,
                 (
                     uniform,
                     RenderBillboardMesh {
@@ -78,7 +82,7 @@ pub fn extract_billboard_text(
     }
 
     *previous_len = batch.len();
-    commands.insert_or_spawn_batch(batch);
+    commands.insert_batch(batch);
 }
 
 pub fn update_billboard_text_layout(
@@ -86,44 +90,54 @@ pub fn update_billboard_text_layout(
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     fonts: Res<Assets<Font>>,
-    text_settings: Res<TextSettings>,
     mut texture_atlases: ResMut<Assets<TextureAtlasLayout>>,
     mut font_atlas_set_storage: ResMut<FontAtlasSets>,
     mut text_pipeline: ResMut<TextPipeline>,
-    mut text_query: Query<(
-        Entity,
-        Ref<Text>,
-        Ref<BillboardTextBounds>,
-        Ref<Anchor>,
-        &mut BillboardTextHandles,
-    )>,
+    mut font_system: ResMut<CosmicFontSystem>,
+    mut swash_cache: ResMut<SwashCache>,
+    mut text_query: Query<
+        (
+            Entity,
+            &mut TextLayoutInfo,
+            Ref<TextLayout>,
+            Ref<BillboardTextBounds>,
+            Ref<Anchor>,
+            &mut BillboardTextHandles,
+            &mut ComputedTextBlock,
+        ),
+        With<BillboardText>,
+    >,
+    mut text_reader: TextReader<BillboardText>,
 ) {
-    const SCALE_FACTOR: f32 = 1.0;
+    const SCALE_FACTOR: f64 = 1.0;
 
-    for (entity, text, bounds, anchor, mut billboard_text_handles) in &mut text_query {
-        if text.is_changed() || bounds.is_changed() || anchor.is_changed() || queue.remove(&entity)
+    for (entity, mut info, layout, bounds, anchor, mut handles, mut computed) in &mut text_query {
+        if layout.is_changed()
+            || bounds.is_changed()
+            || anchor.is_changed()
+            || computed.needs_rerender()
+            || queue.remove(&entity)
         {
-            let text_bounds = Vec2::new(
-                if text.linebreak_behavior == BreakLineOn::NoWrap {
-                    f32::INFINITY
-                } else {
-                    bounds.size.x
-                },
-                bounds.size.y,
-            );
+            let text_bounds = if layout.linebreak == LineBreak::NoWrap {
+                TextBounds::UNBOUNDED
+            } else {
+                bounds.0
+            };
 
-            let info = match text_pipeline.queue_text(
+            match text_pipeline.queue_text(
+                &mut info,
                 &fonts,
-                &text.sections,
+                text_reader.iter(entity),
                 SCALE_FACTOR,
-                text.justify,
-                text.linebreak_behavior,
+                &layout,
                 text_bounds,
                 &mut font_atlas_set_storage,
                 &mut texture_atlases,
                 &mut images,
-                text_settings.as_ref(),
                 YAxisOrientation::BottomToTop,
+                computed.as_mut(),
+                &mut font_system,
+                &mut swash_cache,
             ) {
                 Err(TextError::NoSuchFont) => {
                     error!("Missing font (could still be loading)");
@@ -133,11 +147,14 @@ pub fn update_billboard_text_layout(
                 Err(err @ TextError::FailedToAddGlyph(_)) => {
                     panic!("Fatal error when processing text: {err}.");
                 }
-                Ok(info) => info,
+                Err(err @ TextError::FailedToGetGlyphImage(_)) => {
+                    panic!("Fatal error when processing text: {err}.");
+                }
+                Ok(_) => (),
             };
 
             let text_anchor = -(anchor.as_vec() + 0.5);
-            let alignment_translation = info.logical_size * text_anchor;
+            let alignment_translation = info.size * text_anchor;
 
             let length = info.glyphs.len();
             let mut textures = HashMap::new();
@@ -162,7 +179,7 @@ pub fn update_billboard_text_layout(
                 entry.0.push(glyph.clone());
             }
 
-            billboard_text_handles.clear();
+            handles.clear();
 
             for (glyphs, (atlas, texture)) in textures.into_values() {
                 let mut positions = Vec::with_capacity(info.glyphs.len() * 4);
@@ -171,13 +188,13 @@ pub fn update_billboard_text_layout(
                 let mut indices = Vec::with_capacity(info.glyphs.len() * 6);
 
                 let mut color = palettes::css::WHITE.to_f32_array();
-                let mut current_section = usize::MAX;
+                let mut current_span = usize::MAX;
 
                 for PositionedGlyph {
                     position,
                     size,
                     atlas_info,
-                    section_index,
+                    span_index,
                     ..
                 } in glyphs
                 {
@@ -195,7 +212,7 @@ pub fn update_billboard_text_layout(
                         [bottom_right.x, top_left.y, 0.0],
                     ]);
 
-                    let URect { min, max } = atlas.textures[atlas_info.glyph_index];
+                    let URect { min, max } = atlas.textures[atlas_info.location.glyph_index];
                     let atlas_size = atlas.size.as_vec2();
                     let min = min.as_vec2() / atlas_size;
                     let max = max.as_vec2() / atlas_size;
@@ -207,13 +224,13 @@ pub fn update_billboard_text_layout(
                         [max.x, max.y],
                     ]);
 
-                    if section_index != current_section {
-                        color = text.sections[section_index]
-                            .style
-                            .color
+                    if span_index != current_span {
+                        color = text_reader
+                            .get_color(entity, span_index)
+                            .unwrap()
                             .to_linear()
                             .to_f32_array();
-                        current_section = section_index;
+                        current_span = span_index;
                     }
 
                     colors.extend([color, color, color, color]);
@@ -232,7 +249,7 @@ pub fn update_billboard_text_layout(
 
                 mesh.insert_indices(Indices::U32(indices));
 
-                billboard_text_handles.push(BillboardTextHandleGroup {
+                handles.push(BillboardTextHandleGroup {
                     mesh: meshes.add(mesh),
                     image: texture,
                 });

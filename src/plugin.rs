@@ -2,15 +2,14 @@ use crate::pipeline::{
     prepare_billboard_bind_group, prepare_billboard_view_bind_groups, queue_billboard_texture,
     BillboardImageBindGroups, BillboardPipeline, BillboardUniform, DrawBillboard,
 };
-use crate::text::{extract_billboard_text, update_billboard_text_layout};
+use crate::text::{extract_billboard_text, update_billboard_text_layout, BillboardTextHandles};
 use crate::texture::extract_billboard_texture;
 use crate::{
-    Billboard, BillboardMeshHandle, BillboardTextBounds, BillboardTextureHandle,
-    BILLBOARD_SHADER_HANDLE,
+    Billboard, BillboardMesh, BillboardTextBounds, BillboardTexture, BILLBOARD_SHADER_HANDLE,
 };
 use bevy::prelude::*;
 use bevy::render::camera::CameraUpdateSystem;
-use bevy::render::extract_component::UniformComponentPlugin;
+use bevy::render::extract_component::{ExtractComponentPlugin, UniformComponentPlugin};
 use bevy::render::render_phase::AddRenderCommand;
 use bevy::render::render_resource::SpecializedMeshPipelines;
 use bevy::render::view::check_visibility;
@@ -30,9 +29,11 @@ impl Plugin for BillboardPlugin {
         );
 
         app.add_plugins(UniformComponentPlugin::<BillboardUniform>::default())
-            .register_type::<BillboardMeshHandle>()
-            .register_type::<BillboardTextureHandle>()
+            .add_plugins(ExtractComponentPlugin::<Billboard>::default())
+            .register_type::<BillboardMesh>()
+            .register_type::<BillboardTexture>()
             .register_type::<BillboardTextBounds>()
+            .register_type::<BillboardTextHandles>()
             .add_systems(
                 PostUpdate,
                 (
