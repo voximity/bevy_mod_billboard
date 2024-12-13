@@ -38,7 +38,7 @@ pub fn extract_billboard_text(
     mut previous_len: Local<usize>,
     billboard_text_query: Extract<
         Query<(
-            RenderEntity,
+            &RenderEntity,
             &ViewVisibility,
             &GlobalTransform,
             &Transform,
@@ -63,7 +63,7 @@ pub fn extract_billboard_text(
             // TODO: this will overwrite the render entity if we try to
             // TODO: add multiple handles in the same extraction!
             batch.push((
-                render_entity,
+                render_entity.id(),
                 (
                     uniform,
                     RenderBillboardMesh {
@@ -240,7 +240,7 @@ pub fn update_billboard_text_layout(
 
                 let mut mesh = Mesh::new(
                     PrimitiveTopology::TriangleList,
-                    RenderAssetUsages::default(),
+                    RenderAssetUsages::RENDER_WORLD,
                 );
 
                 mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);

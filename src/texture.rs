@@ -16,7 +16,7 @@ pub fn extract_billboard_texture(
     mut previous_len: Local<usize>,
     billboard_text_query: Extract<
         Query<(
-            RenderEntity,
+            &RenderEntity,
             &ViewVisibility,
             &GlobalTransform,
             &Transform,
@@ -47,7 +47,7 @@ pub fn extract_billboard_texture(
         let uniform = calculate_billboard_uniform(global_transform, transform, lock_axis);
 
         batch.push((
-            render_entity,
+            render_entity.id(),
             (
                 uniform,
                 RenderBillboardMesh {

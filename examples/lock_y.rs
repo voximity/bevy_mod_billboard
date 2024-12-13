@@ -28,7 +28,7 @@ fn setup_billboard(
     commands.spawn((
         BillboardTexture(image_handle),
         BillboardMesh(meshes.add(Rectangle::new(2.0, 4.0))),
-        Transform::from_xyz(2.0, 2.0, 0.0),
+        Transform::from_xyz(-2.0, 2.0, 0.0),
     ));
 }
 

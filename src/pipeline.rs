@@ -531,26 +531,34 @@ impl RenderCommand<Transparent3d> for DrawBillboardMesh {
         };
 
         let mesh_allocator = mesh_allocator.into_inner();
-        let Some(vertex_slice) = mesh_allocator.mesh_vertex_slice(&mesh.id) else {
+        let Some(vertex_buffer_slice) = mesh_allocator.mesh_vertex_slice(&mesh.id) else {
             return RenderCommandResult::Skip;
         };
 
-        let Some(index_slice) = mesh_allocator.mesh_index_slice(&mesh.id) else {
-            return RenderCommandResult::Skip;
-        };
-
-        pass.set_vertex_buffer(0, vertex_slice.buffer.slice(..));
+        pass.set_vertex_buffer(0, vertex_buffer_slice.buffer.slice(..));
 
         match &gpu_mesh.buffer_info {
             RenderMeshBufferInfo::Indexed {
                 index_format,
                 count,
             } => {
-                pass.set_index_buffer(index_slice.buffer.slice(..), 0, *index_format);
-                pass.draw_indexed(0..*count, 0, 0..1);
+                let Some(index_buffer_slice) = mesh_allocator.mesh_index_slice(&mesh.id) else {
+                    return RenderCommandResult::Skip;
+                };
+
+                pass.set_index_buffer(index_buffer_slice.buffer.slice(..), 0, *index_format);
+                pass.draw_indexed(
+                    index_buffer_slice.range.start..(index_buffer_slice.range.start + count),
+                    vertex_buffer_slice.range.start as i32,
+                    0..1,
+                );
             }
             RenderMeshBufferInfo::NonIndexed => {
-                pass.draw(0..gpu_mesh.vertex_count, 0..1);
+                pass.draw(
+                    vertex_buffer_slice.range.start
+                        ..(vertex_buffer_slice.range.start + gpu_mesh.vertex_count),
+                    0..1,
+                );
             }
         }
 
