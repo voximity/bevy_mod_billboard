@@ -76,6 +76,10 @@ impl From<String> for BillboardText {
     }
 }
 
+#[derive(Clone, Component, Default)]
+#[component(storage = "SparseSet")]
+struct BillboardTextNeedsRerender;
+
 #[derive(Clone, Component, Reflect, Default)]
 #[reflect(Component)]
 pub struct BillboardMesh(pub Handle<Mesh>);

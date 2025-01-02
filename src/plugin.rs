@@ -2,7 +2,10 @@ use crate::pipeline::{
     prepare_billboard_bind_group, prepare_billboard_view_bind_groups, queue_billboard_texture,
     BillboardImageBindGroups, BillboardPipeline, BillboardUniform, DrawBillboard,
 };
-use crate::text::{extract_billboard_text, update_billboard_text_layout, BillboardTextHandles};
+use crate::text::{
+    detect_billboard_text_color_change, extract_billboard_text, update_billboard_text_layout,
+    BillboardTextHandles,
+};
 use crate::texture::extract_billboard_texture;
 use crate::{prelude::*, Billboard, BILLBOARD_SHADER_HANDLE};
 use bevy::prelude::*;
@@ -37,7 +40,10 @@ impl Plugin for BillboardPlugin {
                 PostUpdate,
                 (
                     (
-                        detect_text_needs_rerender::<BillboardText>,
+                        (
+                            detect_text_needs_rerender::<BillboardText>,
+                            detect_billboard_text_color_change,
+                        ),
                         update_billboard_text_layout,
                     )
                         .chain()

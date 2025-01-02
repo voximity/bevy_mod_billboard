@@ -1,6 +1,6 @@
 use crate::pipeline::{RenderBillboardImage, RenderBillboardMesh};
 use crate::utils::calculate_billboard_uniform;
-use crate::{BillboardDepth, BillboardLockAxis, BillboardText};
+use crate::{BillboardDepth, BillboardLockAxis, BillboardText, BillboardTextNeedsRerender};
 use bevy::color::palettes;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
@@ -85,7 +85,7 @@ pub fn extract_billboard_text(
     commands.insert_batch(batch);
 }
 
-pub fn update_billboard_text_layout(
+pub(crate) fn update_billboard_text_layout(
     mut queue: Local<HashSet<Entity>>,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -104,15 +104,28 @@ pub fn update_billboard_text_layout(
             Ref<Anchor>,
             &mut BillboardTextHandles,
             &mut ComputedTextBlock,
+            Has<BillboardTextNeedsRerender>,
         ),
         With<BillboardText>,
     >,
     mut text_reader: TextReader<BillboardText>,
+    mut commands: Commands,
 ) {
     const SCALE_FACTOR: f64 = 1.0;
 
-    for (entity, mut info, layout, bounds, anchor, mut handles, mut computed) in &mut text_query {
-        if layout.is_changed()
+    for (
+        entity,
+        mut info,
+        layout,
+        bounds,
+        anchor,
+        mut handles,
+        mut computed,
+        text_needs_rerender,
+    ) in &mut text_query
+    {
+        if text_needs_rerender
+            || layout.is_changed()
             || bounds.is_changed()
             || anchor.is_changed()
             || computed.needs_rerender()
@@ -152,6 +165,10 @@ pub fn update_billboard_text_layout(
                 }
                 Ok(_) => (),
             };
+
+            commands
+                .entity(entity)
+                .remove::<BillboardTextNeedsRerender>();
 
             let text_anchor = -(anchor.as_vec() + 0.5);
             let alignment_translation = info.size * text_anchor;
@@ -254,6 +271,57 @@ pub fn update_billboard_text_layout(
                     image: texture,
                 });
             }
+        }
+    }
+}
+
+/// Similar implementation to [`bevy::text::detect_text_needs_rerender`], but checks
+/// for changed colors on root text components or child span components.
+pub(crate) fn detect_billboard_text_color_change(
+    changed_roots: Query<Entity, (Changed<TextColor>, With<BillboardText>)>,
+    changed_spans: Query<&Parent, (Changed<TextColor>, With<TextSpan>)>,
+    mut computed: Query<(
+        Entity,
+        Option<&Parent>,
+        Has<ComputedTextBlock>,
+        Has<TextSpan>,
+    )>,
+    mut commands: Commands,
+) {
+    // TODO: ideally, we can set needs_rerender of `ComputedTextBlock`, but it is
+    // private, so we use our own marker component.
+
+    // check for root changes
+    for root in &changed_roots {
+        let Some(mut ent) = commands.get_entity(root) else {
+            continue;
+        };
+        ent.insert(BillboardTextNeedsRerender);
+    }
+
+    // check for span changes
+    for span_parent in &changed_spans {
+        let mut parent: Entity = **span_parent;
+
+        loop {
+            let Ok((ent, maybe_parent, has_computed, has_span)) = computed.get_mut(parent) else {
+                break;
+            };
+
+            if has_computed {
+                commands.entity(ent).insert(BillboardTextNeedsRerender);
+                break;
+            }
+
+            if !has_span {
+                break;
+            }
+
+            let Some(next_parent) = maybe_parent else {
+                break;
+            };
+
+            parent = **next_parent;
         }
     }
 }
